@@ -31,6 +31,23 @@ func main() {
 	rl.InitWindow(screenWidth, screenHeight, title)
 	rl.SetTargetFPS(60)
 
+	for x := 0; x < gridWidth; x++ {
+		for y := 0; y < gridHeight; y++ {
+			if y > gridHeight/2 { // Start with water in the bottom half
+				waterGrid[x][y].height = float32(cellHeight)
+			} else {
+				waterGrid[x][y].height = 0
+			}
+			waterGrid[x][y].velocity = 0
+		}
+	}
+	// Let's add some ground to the very bottom
+	for x := 0; x < gridWidth; x++ {
+		for y := gridHeight - 5; y < gridHeight; y++ { // Bottom 5 rows are solid
+			waterGrid[x][y].height = float32(cellHeight) * 2 // Give it extra "height" to signify solid
+		}
+	}
+
 	for !rl.WindowShouldClose() {
 		//Detect window close button or ESC key
 		rl.BeginDrawing()
