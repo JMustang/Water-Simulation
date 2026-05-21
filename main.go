@@ -1,20 +1,29 @@
 package main
 
 import (
+	"fmt"
+	"math"
+	"math/rand"
+	"time"
+
 	rl "github.com/gen2brain/raylib-go/raylib"
 )
 
 const (
 	screenWidth  = 800
 	screenHeight = 450
-	title        = "💦 Water Simulation with Raylib-go"
+	title        = "Water Simulation with Raylib-go"
 	gridWidth    = 160
 	gridHeight   = 90
-	cellHeight   = screenHeight / gridHeight //Size of each cell visually
+	cellHeight   = screenHeight / gridHeight
 	cellWidth    = screenWidth / gridWidth
-	spreadFactor = 0.05                           // How quickly water spreads
-	dampening    = 0.999                          // Reduces wave energy over time
-	waterColor   = rl.NewColor(50, 100, 200, 255) // A nice blue
+	spreadFactor = 0.25  // Wave propagation strength
+	dampening    = 0.985 // Energy loss per frame
+	gravity      = 0.02
+)
+
+var (
+	waterColor   = rl.NewColor(50, 100, 200, 255)
 	bedrockColor = rl.NewColor(80, 80, 80, 255)
 )
 
@@ -23,92 +32,185 @@ type WaterCell struct {
 	velocity float32
 }
 
-// Global grid for simplicity
 var waterGrid [gridWidth][gridHeight]WaterCell
 var newWaterGrid [gridWidth][gridHeight]WaterCell
 
+var rng = rand.New(rand.NewSource(time.Now().UnixNano()))
+
+func isBedrock(height float32) bool {
+	return height >= float32(cellHeight)*1.5
+}
+
+func heightAt(x, y int) float32 {
+	if x < 0 || x >= gridWidth || y < 0 || y >= gridHeight {
+		return 0
+	}
+	h := waterGrid[x][y].height
+	if isBedrock(h) {
+		return float32(cellHeight) * 2
+	}
+	return h
+}
+
+func laplacian(x, y int) float32 {
+	center := heightAt(x, y)
+	return heightAt(x-1, y) + heightAt(x+1, y) + heightAt(x, y-1) + heightAt(x, y+1) - 4*center
+}
+
 func updateWater() {
-	// First, calculate the new state for each cell
 	for x := 0; x < gridWidth; x++ {
 		for y := 0; y < gridHeight; y++ {
-			currentCell := waterGrid[x][y] // Skip if it's considered "solid ground" or empty
-			if currentCell.height >= float32(cellHeight)*1.5 || currentCell.height <= 0 {
-				newWaterGrid[x][y] = currentCell
+			cell := waterGrid[x][y]
+			if isBedrock(cell.height) {
+				newWaterGrid[x][y] = WaterCell{
+					height:   float32(cellHeight) * 2,
+					velocity: 0,
+				}
 				continue
-			} // Apply gravity (simple downward pull)
-			currentCell.velocity -= 0.05 // A small downward acceleration			// Pressure and flow with neighbors
-			// We need to check bounds for neighbors, otherwise our program will crash!
-			if x > 0 { // Left neighbor
-				diff := currentCell.height - waterGrid[x-1][y].height
-				currentCell.velocity -= diff * spreadFactor
-				waterGrid[x-1][y].velocity += diff * spreadFactor // Affect neighbor's velocity
 			}
-			if x < gridWidth-1 { // Right neighbor
-				diff := currentCell.height - waterGrid[x+1][y].height
-				currentCell.velocity -= diff * spreadFactor
-				waterGrid[x+1][y].velocity += diff * spreadFactor
+
+			cell.velocity += spreadFactor * laplacian(x, y)
+			cell.velocity -= gravity * cell.height
+			cell.velocity *= dampening
+			cell.height += cell.velocity
+
+			if cell.height < 0 {
+				cell.height = 0
+				cell.velocity = 0
 			}
-			if y > 0 { // Top neighbor (less common for basic water, but for splash effects)
-				diff := currentCell.height - waterGrid[x][y-1].height
-				currentCell.velocity -= diff * spreadFactor * 0.5 // Weaker vertical spread
-				waterGrid[x][y-1].velocity += diff * spreadFactor * 0.5
+			maxWater := float32(cellHeight) * 1.5
+			if cell.height > maxWater {
+				cell.height = maxWater
+				cell.velocity *= 0.5
 			}
-			if y < gridHeight-1 { // Bottom neighbor (gravity already handles this, but for upward force)
-				// You know, we won't explicitly add bottom neighbor pressure here, gravity really dominates that.
-			} // Update height based on velocity
-			currentCell.height += currentCell.velocity // Apply damping
-			currentCell.velocity *= dampening          // Clamp height to prevent extreme values (e.g., negative water).
-			// We don't want our water disappearing or exploding, right?
-			if currentCell.height < 0 {
-				currentCell.height = 0
-			}
-			if currentCell.height > float32(cellHeight)*2 { // Don't let it explode
-				currentCell.height = float32(cellHeight) * 2
-			}
-			newWaterGrid[x][y] = currentCell
+
+			newWaterGrid[x][y] = cell
 		}
-	} // Copy the new state back to the main grid. This is crucial for the next frame!
+	}
 	for x := 0; x < gridWidth; x++ {
 		for y := 0; y < gridHeight; y++ {
-			// A little sanity check: ensure "solid" ground actually stays solid.
-			if waterGrid[x][y].height >= float32(cellHeight)*1.5 { // A threshold to indicate solid ground
-				waterGrid[x][y].height = float32(cellHeight) * 2
-				waterGrid[x][y].velocity = 0
-			} else {
-				waterGrid[x][y] = newWaterGrid[x][y]
+			waterGrid[x][y] = newWaterGrid[x][y]
+		}
+	}
+}
+
+func disturbAt(gridX, gridY int, strength float32) {
+	for dx := -3; dx <= 3; dx++ {
+		for dy := -3; dy <= 3; dy++ {
+			x := gridX + dx
+			y := gridY + dy
+			if x < 0 || x >= gridWidth || y < 0 || y >= gridHeight {
+				continue
 			}
+			cell := &waterGrid[x][y]
+			if isBedrock(cell.height) {
+				continue
+			}
+			dist := float32(math.Sqrt(float64(dx*dx + dy*dy)))
+			falloff := 1 - dist/4
+			if falloff < 0 {
+				continue
+			}
+			cell.velocity += strength * falloff
+			cell.height += strength * 0.5 * falloff
+		}
+	}
+}
+
+func initWater() {
+	surfaceY := gridHeight/2 + 1
+
+	for x := 0; x < gridWidth; x++ {
+		for y := 0; y < gridHeight; y++ {
+			waterGrid[x][y] = WaterCell{}
+		}
+	}
+
+	for x := 0; x < gridWidth; x++ {
+		for y := surfaceY; y < gridHeight-5; y++ {
+			waterGrid[x][y].height = float32(cellHeight)
+		}
+		// Ripple on the surface so waves are visible immediately
+		ripple := float32(math.Sin(float64(x)*0.15)) * float32(cellHeight) * 0.4
+		waterGrid[x][surfaceY].height += ripple
+	}
+
+	for x := 0; x < gridWidth; x++ {
+		for y := gridHeight - 5; y < gridHeight; y++ {
+			waterGrid[x][y].height = float32(cellHeight) * 2
+		}
+	}
+
+	// Small random bumps inside the pool
+	for i := 0; i < 40; i++ {
+		x := rng.Intn(gridWidth)
+		y := surfaceY + 1 + rng.Intn(gridHeight-5-surfaceY-1)
+		if y < surfaceY+1 {
+			continue
+		}
+		waterGrid[x][y].height += rng.Float32() * float32(cellHeight) * 0.5
+	}
+}
+
+func drawWater() {
+	for x := 0; x < gridWidth; x++ {
+		for y := 0; y < gridHeight; y++ {
+			cell := waterGrid[x][y]
+			drawX := int32(x * cellWidth)
+			drawY := int32(y * cellHeight)
+
+			if isBedrock(cell.height) {
+				rl.DrawRectangle(drawX, drawY, int32(cellWidth), int32(cellHeight), bedrockColor)
+				continue
+			}
+			if cell.height <= 0 {
+				continue
+			}
+
+			// Use ceil so small height changes become visible pixels
+			level := int32(math.Ceil(float64(cell.height)))
+			if level < 1 {
+				level = 1
+			}
+			if level > int32(cellHeight) {
+				level = int32(cellHeight)
+			}
+
+			alpha := uint8(math.Min(255, 180+float64(cell.height/float32(cellHeight))*75))
+			color := rl.NewColor(waterColor.R, waterColor.G, waterColor.B, alpha)
+
+			rl.DrawRectangle(
+				drawX,
+				drawY+int32(cellHeight)-level,
+				int32(cellWidth),
+				level,
+				color,
+			)
 		}
 	}
 }
 
 func main() {
 	rl.InitWindow(screenWidth, screenHeight, title)
+	defer rl.CloseWindow()
 	rl.SetTargetFPS(60)
 
-	for x := 0; x < gridWidth; x++ {
-		for y := 0; y < gridHeight; y++ {
-			if y > gridHeight/2 { // Start with water in the bottom half
-				waterGrid[x][y].height = float32(cellHeight)
-			} else {
-				waterGrid[x][y].height = 0
-			}
-			waterGrid[x][y].velocity = 0
-		}
-	}
-	// Let's add some ground to the very bottom
-	for x := 0; x < gridWidth; x++ {
-		for y := gridHeight - 5; y < gridHeight; y++ { // Bottom 5 rows are solid
-			waterGrid[x][y].height = float32(cellHeight) * 2 // Give it extra "height" to signify solid
-		}
-	}
+	initWater()
 
 	for !rl.WindowShouldClose() {
-		//Detect window close button or ESC key
 		updateWater()
+
+		if rl.IsMouseButtonDown(rl.MouseButtonLeft) {
+			gx := int(rl.GetMouseX()) / cellWidth
+			gy := int(rl.GetMouseY()) / cellHeight
+			disturbAt(gx, gy, 2.5)
+		}
+
 		rl.BeginDrawing()
-		rl.ClearBackground(rl.Black) // Clear the background to white
-		rl.DrawText("Go Water!", 100, 200, 20, rl.LightGray)
+		rl.ClearBackground(rl.Black)
+		drawWater()
+		rl.DrawText("Clique para criar ondas | ESC para sair", 10, 10, 16, rl.LightGray)
+		rl.DrawText(fmt.Sprintf("FPS: %d", rl.GetFPS()), 10, 30, 16, rl.LightGray)
 		rl.EndDrawing()
 	}
-	rl.CloseWindow()
 }
